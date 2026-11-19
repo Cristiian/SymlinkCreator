@@ -1,0 +1,53 @@
+<!--
+  SymlinkCreator installer (WiX Toolset 6). Built by build.ps1 -Installer.
+  - Installs the binaries and the signed sparse package into Program Files.
+  - Trusts the package certificate (LocalMachine\TrustedPeople) so no Developer Mode is needed.
+  - Registers the context menu for the user who runs the installer.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="SymlinkCreator" Manufacturer="SymlinkCreator" Version="$(var.Version)"
+           UpgradeCode="F17ECF19-0467-4EB5-89F2-A4E441930F71" Scope="perMachine" Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of SymlinkCreator is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPCOMMENTS" Value="Paste copied files and folders as symbolic links, junctions or hard links." />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="SymlinkCreator">
+        <!-- Fixed GUID: the binaries carry no version resource. MajorUpgrade removes the old files first. -->
+        <Component Id="Binaries" Guid="34E7CFB0-62C2-4711-B8F7-9980791AA472">
+          <File Id="SymlinkCreatorExe" Source="$(var.BinDir)\SymlinkCreator.exe" KeyPath="yes" />
+          <File Id="SymlinkCreatorDll" Source="$(var.BinDir)\SymlinkCreator.dll" />
+          <File Id="SymlinkCreatorMsix" Source="$(var.BinDir)\SymlinkCreator.msix" />
+          <File Id="SymlinkCreatorCer" Source="$(var.BinDir)\SymlinkCreator.cer" />
+          <File Id="Logo" Source="$(var.BinDir)\Logo.png" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="Binaries" />
+    </Feature>
+
+    <!-- Elevated (system context): trust the package certificate. -->
+    <CustomAction Id="InstallCertificate" FileRef="SymlinkCreatorExe" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="--install-cert &quot;[INSTALLFOLDER]SymlinkCreator.cer&quot;" />
+    <CustomAction Id="RemoveCertificate" FileRef="SymlinkCreatorExe" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="--remove-cert &quot;[INSTALLFOLDER]SymlinkCreator.cer&quot;" />
+
+    <!-- As the installing user: packages are registered per user. -->
+    <CustomAction Id="RegisterMenu" FileRef="SymlinkCreatorExe" Execute="deferred" Impersonate="yes" Return="check"
+                  ExeCommand="--register" />
+    <CustomAction Id="UnregisterMenu" FileRef="SymlinkCreatorExe" Execute="deferred" Impersonate="yes" Return="ignore"
+                  ExeCommand="--unregister" />
+
+    <InstallExecuteSequence>
+      <Custom Action="UnregisterMenu" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RemoveCertificate" After="UnregisterMenu" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="InstallCertificate" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="RegisterMenu" After="InstallCertificate" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

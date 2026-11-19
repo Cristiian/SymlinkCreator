@@ -1,0 +1,91 @@
+# Builds the MSI on every push and pull request; a tag like v1.2.3 also publishes a GitHub release.
+#
+# Signing: set the repository secrets SIGNING_CERT_PFX (base64 of a .pfx) and SIGNING_CERT_PASSWORD so
+# every installer is signed with the same certificate. Without them (for example, pull requests from
+# forks) build.ps1 creates a throwaway certificate; that installer still works on its own.
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    env:
+      SIGNING_CERT_PFX: ${{ secrets.SIGNING_CERT_PFX }}
+      SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: version
+        shell: powershell
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $version = $env:GITHUB_REF_NAME -replace '^v', ''
+              if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Release tags must look like v1.2.3, not $env:GITHUB_REF_NAME." }
+          } else {
+              $version = "0.0.$env:GITHUB_RUN_NUMBER"   # test builds; a release always upgrades them
+          }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "value=$version`n")   # UTF-8 without a BOM
+
+      - name: Import signing certificate
+        shell: powershell
+        run: |
+          if (-not $env:SIGNING_CERT_PFX) {
+              if ($env:GITHUB_REF_TYPE -eq 'tag') {
+                  '::warning::SIGNING_CERT_PFX is not set: this release is signed with a throwaway certificate.'
+              }
+              return
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_CERT_PFX))
+          try {
+              $password = ConvertTo-SecureString $env:SIGNING_CERT_PASSWORD -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+              if ($cert.Subject -ne 'CN=SymlinkCreator') { throw "The signing certificate must be CN=SymlinkCreator, not $($cert.Subject)." }
+          } finally {
+              Remove-Item $pfx
+          }
+
+      - name: Install WiX
+        shell: powershell
+        run: dotnet tool install wix --version 6.0.2 --tool-path "$env:RUNNER_TEMP\wix"
+
+      - name: Build
+        shell: powershell
+        run: .\build.ps1 -Installer -Version ${{ steps.version.outputs.value }} -Wix "$env:RUNNER_TEMP\wix\wix.exe"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SymlinkCreator-${{ steps.version.outputs.value }}
+          path: build/SymlinkCreator-${{ steps.version.outputs.value }}.msi
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: SymlinkCreator-${{ needs.build.outputs.version }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "SymlinkCreator-$VERSION.msi" \
+            --repo "$GITHUB_REPOSITORY" --title "SymlinkCreator $VERSION" --generate-notes
